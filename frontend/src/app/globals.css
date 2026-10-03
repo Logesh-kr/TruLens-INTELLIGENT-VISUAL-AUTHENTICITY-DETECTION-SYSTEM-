@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0A0C10;
+  --foreground: #e2e8f0; /* slate-200 */
+}
+
+@theme inline {
+  --color-brand-cyan: #00E5FF;
+  --color-brand-cyan-dim: rgba(0, 229, 255, 0.12);
+  --color-brand-cyan-border: rgba(0, 229, 255, 0.3);
+  --color-brand-emerald: #00F5A0;
+  --color-brand-emerald-dim: rgba(0, 245, 160, 0.12);
+  --color-brand-crimson: #FF3B69;
+  --color-brand-crimson-dim: rgba(255, 59, 105, 0.12);
+  --color-brand-amber: #FFB800;
+  --color-brand-bg: #0A0C10;
+  --color-brand-surface: #0F1219;
+  --color-brand-surface-card: #141822;
+  --color-brand-surface-hover: #1A202D;
+  --color-brand-border: #21293B;
+  --color-brand-border-subtle: #181E2B;
+  
+  --animate-scan-line: scan 2.0s ease-in-out infinite;
+  --animate-pulse-subtle: pulseSlow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-radar-spin: spin 8s linear infinite;
+  --animate-reticle-pulse: reticlePulse 1.8s ease-in-out infinite;
+}
+
+@keyframes scan {
+  0%, 100% { transform: translateY(-100%); opacity: 0.1; }
+  50% { transform: translateY(100%); opacity: 0.9; }
+}
+@keyframes pulseSlow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+@keyframes reticlePulse {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.25); opacity: 0.4; }
+}
+
+/* Technical Grid Matrix Background */
+.bg-tech-grid {
+  background-size: 32px 32px;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+}
+.bg-radial-vignette {
+  background: radial-gradient(circle at 50% 15%, rgba(0, 229, 255, 0.08) 0%, rgba(10, 12, 16, 0.7) 45%, #0A0C10 90%);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0A0C10;
+}
+::-webkit-scrollbar-thumb {
+  background: #21293B;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Laser sweep gradient */
+.scan-laser {
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 229, 255, 0.06) 60%, rgba(0, 229, 255, 0.5) 96%, #00E5FF 100%);
+  box-shadow: 0 0 16px rgba(0, 229, 255, 0.7);
+}
+
+/* Artifact Heatmap simulation filter */
+.heatmap-filter {
+  filter: contrast(180%) saturate(220%) hue-rotate(185deg) invert(10%);
+}
+
+/* 3D Depth tilt card utility */
+.tilt-card {
+  transition: transform 0.15s cubic-bezier(0.2, 0, 0.2, 1), box-shadow 0.2s ease;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tilt-card {
+    transform: none !important;
+    transition: none !important;
+  }
+  .animate-scan-line, .animate-radar-spin, .animate-pulse-subtle, .animate-reticle-pulse {
+    animation: none !important;
+  }
+}
