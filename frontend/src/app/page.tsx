@@ -406,7 +406,10 @@ export default function Home() {
     const visualPromise = visualSequence();
 
     // 2. Construct the API fetch as an asynchronous Promise
-    const apiPromise = fetch("http://localhost:8000/api/analyze", {
+    const API_BASE_URL =
+      process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+    const apiPromise = fetch(`${API_BASE_URL}/api/analyze`, {
       method: "POST",
       body: formData,
     }).then(async (res) => {
