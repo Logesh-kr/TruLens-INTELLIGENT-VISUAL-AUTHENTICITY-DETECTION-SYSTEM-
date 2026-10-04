@@ -11,7 +11,7 @@ interface PredictionResponse {
 }
 
 export default function Home() {
-  const [viewState, setViewState] = useState<"empty" | "selected" | "analyzing" | "result">("empty");
+  const [viewState, setViewState] = useState<"empty" | "preparing" | "selected" | "analyzing" | "result" | "error">("empty");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string>("");
   const [fileMeta, setFileMeta] = useState({ name: "", dims: "", size: "" });
@@ -33,6 +33,14 @@ export default function Home() {
 
     const container = document.getElementById('trulens-hero-three-container');
     if (!container) return;
+    
+    let isVisible = true;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.length > 0) {
+        isVisible = entries[0].isIntersecting;
+      }
+    });
+    observer.observe(container);
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || 480;
@@ -205,6 +213,7 @@ export default function Home() {
     let targetX = 0, targetY = 0;
 
     const onMouseMove = (e: MouseEvent) => {
+      if (!isVisible) return;
       const rect = container.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
@@ -227,6 +236,8 @@ export default function Home() {
 
     const animate = () => {
       animationId = requestAnimationFrame(animate);
+      if (!isVisible) return; // Save GPU/CPU when off-screen
+
       const time = clock.getElapsedTime();
 
       const floatY = Math.sin(time * 0.9) * 0.08;
@@ -258,6 +269,7 @@ export default function Home() {
     animate();
 
     return () => {
+      observer.disconnect();
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('resize', onResize);
       cancelAnimationFrame(animationId);
@@ -271,8 +283,10 @@ export default function Home() {
     const rect = card.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width - 0.5;
     const y = (e.clientY - rect.top) / rect.height - 0.5;
-    const tiltX = -y * 8; 
-    const tiltY = x * 8;
+    
+    // Scale down the tilt multiplier slightly for a subtler high-end feel
+    const tiltX = -y * 6; 
+    const tiltY = x * 6;
     card.style.transform = `perspective(900px) rotateX(${tiltX.toFixed(2)}deg) rotateY(${tiltY.toFixed(2)}deg) translateY(-2px)`;
   };
   
@@ -283,21 +297,46 @@ export default function Home() {
   const processFile = (selectedFile: File) => {
     if (!selectedFile.type.startsWith("image/")) {
       setErrorMsg("Please upload a valid image file (JPG, PNG, WEBP).");
+      setViewState("error");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setPreview(event.target?.result as string);
-      setFile(selectedFile);
-      setFileMeta({
-        name: selectedFile.name,
-        dims: "Unknown px", // we can't get this synchronously easily without Image element
-        size: (selectedFile.size / (1024 * 1024)).toFixed(2) + ' MB'
-      });
-      setIsHeatmap(false);
-      setViewState("selected");
+    
+    setViewState("preparing");
+    setErrorMsg(null);
+    
+    // Use an object URL to quickly load and measure natural pixel dimensions
+    const objUrl = URL.createObjectURL(selectedFile);
+    const img = new Image();
+    
+    img.onload = () => {
+      const realDims = `${img.naturalWidth} × ${img.naturalHeight} px`;
+      URL.revokeObjectURL(objUrl); // Clean up immediately after reading dimensions
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        // Enforce a brief local "PREPARING" state (600ms) for UI feedback
+        setTimeout(() => {
+          setPreview(event.target?.result as string);
+          setFile(selectedFile);
+          setFileMeta({
+            name: selectedFile.name,
+            dims: realDims,
+            size: (selectedFile.size / (1024 * 1024)).toFixed(2) + ' MB'
+          });
+          setIsHeatmap(false);
+          setViewState("selected");
+        }, 600);
+      };
+      reader.readAsDataURL(selectedFile);
     };
-    reader.readAsDataURL(selectedFile);
+    
+    img.onerror = () => {
+      URL.revokeObjectURL(objUrl);
+      setErrorMsg("Failed to read image pixel dimensions.");
+      setViewState("error");
+    };
+    
+    img.src = objUrl;
   };
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -332,62 +371,63 @@ export default function Home() {
     setAnalyzingStage(0);
     setErrorMsg(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    
+    // Smooth scroll directly back to the upload workspace
+    setTimeout(() => {
+      const analyzerEl = document.getElementById("analyzer");
+      if (analyzerEl) {
+        analyzerEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 50);
   };
 
-  // Preset Handlers (Optional Fallbacks)
-  const handleLoadSample = async (url: string, filename: string) => {
-    try {
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const testFile = new File([blob], filename, { type: blob.type });
-      processFile(testFile);
-    } catch (e) {
-      console.error(e);
-      setErrorMsg("Failed to load sample image.");
-    }
-  };
-
-  // Inference Execution
+  // Inference Execution - Safe API Synchronization
   const triggerAnalyze = async () => {
     if (!file) return;
     setViewState("analyzing");
     setErrorMsg(null);
-
-    // Sequence stages for visual effect (total 1.8s)
     setAnalyzingStage(1);
-    const timeouts = [
-      setTimeout(() => setAnalyzingStage(2), 450),
-      setTimeout(() => setAnalyzingStage(3), 950),
-      setTimeout(() => setAnalyzingStage(4), 1400)
-    ];
 
     const formData = new FormData();
     formData.append("file", file);
 
-    try {
-      const res = await fetch("http://localhost:8000/api/analyze", {
-        method: "POST",
-        body: formData,
-      });
+    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+    // 1. Construct the visual sequence as an asynchronous Promise
+    const visualSequence = async () => {
+      await wait(450);
+      setAnalyzingStage(2);
+      await wait(500);
+      setAnalyzingStage(3);
+      await wait(450);
+      setAnalyzingStage(4);
+    };
+    const visualPromise = visualSequence();
+
+    // 2. Construct the API fetch as an asynchronous Promise
+    const apiPromise = fetch("http://localhost:8000/api/analyze", {
+      method: "POST",
+      body: formData,
+    }).then(async (res) => {
       if (!res.ok) {
         const errText = await res.text();
         throw new Error(`HTTP ${res.status}: ${errText || "Inference failed"}`);
       }
+      return await res.json() as PredictionResponse;
+    });
 
-      const data: PredictionResponse = await res.json();
+    try {
+      // 3. Wait for BOTH conditions (Visual Stage 4 AND FastAPI Response) simultaneously
+      const [_, data] = await Promise.all([visualPromise, apiPromise]);
       
-      // Wait for visual sequence to finish before showing result
-      setTimeout(() => {
-        setResultData(data);
-        setViewState("result");
-      }, 1800);
-
+      // Provide a tiny buffer on Stage 4 so it's readable if the API was faster than the sequence
+      await wait(300);
+      
+      setResultData(data);
+      setViewState("result");
     } catch (err: any) {
-      // Clear visual timeouts on error
-      timeouts.forEach(clearTimeout);
       setErrorMsg(err.message || "Failed to analyze image.");
-      setViewState("selected");
+      setViewState("error");
     }
   };
 
@@ -405,18 +445,18 @@ export default function Home() {
       {/* Header */}
       <header className="sticky top-0 z-50 backdrop-blur-md bg-brand-bg/85 border-b border-brand-border/80 transition-colors">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <a className="flex items-center gap-3 group focus:outline-none focus:ring-2 focus:ring-brand-cyan/50 rounded-lg p-1" href="#">
+          <button onClick={resetState} className="flex items-center gap-3 group focus:outline-none focus:ring-2 focus:ring-brand-cyan/50 rounded-lg p-1">
             <div className="w-8 h-8 rounded-lg overflow-hidden border border-brand-border group-hover:border-brand-cyan/60 transition-all flex items-center justify-center bg-brand-surface shadow-sm shadow-black">
               <span className="font-bold text-white text-xs">TL</span>
             </div>
-            <div className="flex flex-col">
+            <div className="flex flex-col text-left">
               <div className="flex items-center gap-2">
                 <span className="font-mono text-sm font-bold text-white uppercase tracking-[0.2em]">TRULENS</span>
                 <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/20">v2.4-PRO</span>
               </div>
               <span className="text-[10px] font-mono text-slate-400 -mt-0.5 tracking-tight">AI VISUAL FORENSICS</span>
             </div>
-          </a>
+          </button>
           <nav className="hidden md:flex items-center gap-8 text-xs font-mono tracking-wide text-slate-400">
             <a className="text-slate-200 hover:text-brand-cyan transition-colors flex items-center gap-1.5" href="#analyzer">
               <span className="w-1.5 h-1.5 rounded-full bg-brand-cyan animate-pulse"></span> ANALYZER
@@ -489,8 +529,8 @@ export default function Home() {
                 <span className="text-slate-600 font-medium hidden sm:inline">|</span>
                 <div className="flex items-center gap-2 text-slate-300">
                   <span>INSPECTION CORE: 
-                    <span className={`ml-2 font-bold ${viewState === 'empty' ? 'text-brand-cyan' : viewState === 'selected' ? 'text-brand-amber' : viewState === 'analyzing' ? 'text-brand-cyan animate-pulse' : 'text-slate-300'}`}>
-                      {viewState === 'empty' ? 'READY' : viewState === 'selected' ? 'STAGED' : viewState === 'analyzing' ? 'ANALYZING' : 'COMPLETED'}
+                    <span className={`ml-2 font-bold ${viewState === 'empty' ? 'text-brand-cyan' : viewState === 'preparing' ? 'text-brand-cyan animate-pulse' : viewState === 'selected' ? 'text-brand-amber' : viewState === 'analyzing' ? 'text-brand-cyan animate-pulse' : viewState === 'error' ? 'text-brand-crimson' : 'text-slate-300'}`}>
+                      {viewState === 'empty' ? 'READY' : viewState === 'preparing' ? 'PREPARING' : viewState === 'selected' ? 'STAGED' : viewState === 'analyzing' ? 'ANALYZING' : viewState === 'error' ? 'FAILED' : 'COMPLETED'}
                     </span>
                   </span>
                 </div>
@@ -504,12 +544,6 @@ export default function Home() {
             </div>
 
             <div className="p-4 sm:p-8">
-              {errorMsg && (
-                <div className="mb-4 p-3 bg-brand-crimson/10 border border-brand-crimson/30 text-brand-crimson text-sm font-mono rounded">
-                  ERROR: {errorMsg}
-                </div>
-              )}
-
               {/* STATE 1: EMPTY */}
               {viewState === "empty" && (
                 <div className="transition-all duration-300">
@@ -553,20 +587,37 @@ export default function Home() {
                 </div>
               )}
 
+              {/* STATE 1.5: PREPARING */}
+              {viewState === "preparing" && (
+                <div className="transition-all duration-300 p-10 sm:p-16 text-center bg-brand-surface-card rounded-xl border border-brand-cyan/20">
+                  <div className="w-10 h-10 rounded-full border-2 border-brand-cyan border-t-transparent animate-spin mx-auto mb-6"></div>
+                  <h2 className="text-xl font-bold text-white mb-2">PREPARING IMAGE</h2>
+                  <p className="text-sm font-mono text-slate-400">
+                    Extracting local metadata and pixel parameters...
+                  </p>
+                </div>
+              )}
+
               {/* STATE 2: SELECTED */}
               {viewState === "selected" && (
                 <div className="transition-all duration-300">
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                    <div className="lg:col-span-7 bg-brand-bg rounded-xl border border-brand-cyan/30 overflow-hidden relative shadow-xl group tilt-card" onMouseMove={handleCardMouseMove} onMouseLeave={handleCardMouseLeave}>
+                    <div 
+                      className="lg:col-span-7 bg-brand-bg rounded-xl border border-brand-cyan/30 overflow-hidden relative shadow-xl group tilt-card" 
+                      style={{ transformStyle: 'preserve-3d' }} 
+                      onMouseMove={handleCardMouseMove} 
+                      onMouseLeave={handleCardMouseLeave}
+                    >
                       <div className="aspect-[4/3] w-full flex items-center justify-center bg-black/70 relative">
-                        <img src={preview} className="max-h-full max-w-full object-contain pointer-events-none" />
-                        <div className="absolute inset-0 bg-tech-grid opacity-20 pointer-events-none"></div>
-                        <div className="absolute top-2 left-2 w-3 h-3 border-t-2 border-l-2 border-brand-cyan pointer-events-none"></div>
-                        <div className="absolute top-2 right-2 w-3 h-3 border-t-2 border-r-2 border-brand-cyan pointer-events-none"></div>
-                        <div className="absolute bottom-2 left-2 w-3 h-3 border-b-2 border-l-2 border-brand-cyan pointer-events-none"></div>
-                        <div className="absolute bottom-2 right-2 w-3 h-3 border-b-2 border-r-2 border-brand-cyan pointer-events-none"></div>
+                        <img src={preview} className="max-h-full max-w-full object-contain pointer-events-none" style={{ transform: 'translateZ(10px)' }} />
+                        <div className="absolute inset-0 bg-tech-grid opacity-20 pointer-events-none" style={{ transform: 'translateZ(-5px)' }}></div>
                         
-                        <button onClick={resetState} className="absolute top-3 right-3 p-2 rounded-lg bg-brand-surface/90 hover:bg-brand-surface text-slate-300 hover:text-white border border-brand-border transition-all font-mono text-xs flex items-center gap-1.5 shadow-md">
+                        <div className="absolute top-4 left-4 w-4 h-4 border-t-2 border-l-2 border-brand-cyan pointer-events-none" style={{ transform: 'translateZ(15px)' }}></div>
+                        <div className="absolute top-4 right-4 w-4 h-4 border-t-2 border-r-2 border-brand-cyan pointer-events-none" style={{ transform: 'translateZ(15px)' }}></div>
+                        <div className="absolute bottom-4 left-4 w-4 h-4 border-b-2 border-l-2 border-brand-cyan pointer-events-none" style={{ transform: 'translateZ(15px)' }}></div>
+                        <div className="absolute bottom-4 right-4 w-4 h-4 border-b-2 border-r-2 border-brand-cyan pointer-events-none" style={{ transform: 'translateZ(15px)' }}></div>
+                        
+                        <button onClick={resetState} className="absolute top-3 right-3 p-2 rounded-lg bg-brand-surface/90 hover:bg-brand-surface text-slate-300 hover:text-white border border-brand-border transition-all font-mono text-xs flex items-center gap-1.5 shadow-md" style={{ transform: 'translateZ(20px)' }}>
                           Remove
                         </button>
                       </div>
@@ -576,6 +627,7 @@ export default function Home() {
                           <span className="text-slate-200 font-medium truncate">{fileMeta.name}</span>
                         </div>
                         <div className="flex items-center gap-4 text-slate-400 shrink-0">
+                          <span>{fileMeta.dims}</span>
                           <span>{fileMeta.size}</span>
                         </div>
                       </div>
@@ -611,11 +663,17 @@ export default function Home() {
                 <div className="transition-all duration-300 py-6">
                   <div className="max-w-2xl mx-auto text-center space-y-6">
                     <div className="relative w-72 sm:w-96 aspect-[4/3] mx-auto rounded-xl border border-brand-cyan/60 bg-black overflow-hidden shadow-2xl shadow-cyan-900/30">
-                      <img src={preview} className="w-full h-full object-cover filter brightness-75 contrast-125 pointer-events-none" />
-                      <div className="absolute inset-0 bg-tech-grid opacity-40 pointer-events-none"></div>
-                      <div className="absolute inset-x-0 h-16 scan-laser animate-scan-line pointer-events-none"></div>
+                      {/* Layer 1: Image */}
+                      <img src={preview} className="absolute inset-0 w-full h-full object-cover filter brightness-75 contrast-125 pointer-events-none z-0" />
                       
-                      <div className="absolute inset-0 pointer-events-none">
+                      {/* Layer 2: Grid Frame Overlay */}
+                      <div className="absolute inset-0 bg-tech-grid opacity-40 pointer-events-none z-10"></div>
+                      
+                      {/* Layer 3: Scanner Line (Clipped securely within bounds, overlaying image) */}
+                      <div className="absolute inset-x-0 h-16 scan-laser animate-scan-line pointer-events-none z-20 overflow-hidden mix-blend-screen"></div>
+                      
+                      {/* Layer 4: Interactive Reticles */}
+                      <div className="absolute inset-0 pointer-events-none z-30">
                         <div className="absolute top-[28%] left-[32%] -translate-x-1/2 -translate-y-1/2 flex items-center justify-center">
                           <div className="w-5 h-5 rounded-full border border-brand-cyan animate-reticle-pulse"></div>
                         </div>
@@ -631,16 +689,16 @@ export default function Home() {
                     <div className="space-y-4">
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] font-mono max-w-lg mx-auto">
                         <div className={`p-2 rounded border transition-all duration-200 ${analyzingStage >= 1 ? 'border-brand-cyan bg-brand-cyan/20 text-brand-cyan font-bold shadow-[0_0_10px_rgba(0,229,255,0.25)]' : 'border-brand-border bg-brand-surface text-slate-500'}`}>
-                          1. IMAGE RECEIVED
+                          01 IMAGE INGESTION
                         </div>
                         <div className={`p-2 rounded border transition-all duration-200 ${analyzingStage >= 2 ? 'border-brand-cyan bg-brand-cyan/20 text-brand-cyan font-bold shadow-[0_0_10px_rgba(0,229,255,0.25)]' : 'border-brand-border bg-brand-surface text-slate-500'}`}>
-                          2. EXTRACTION
+                          02 PREPROCESSING
                         </div>
                         <div className={`p-2 rounded border transition-all duration-200 ${analyzingStage >= 3 ? 'border-brand-cyan bg-brand-cyan/20 text-brand-cyan font-bold shadow-[0_0_10px_rgba(0,229,255,0.25)]' : 'border-brand-border bg-brand-surface text-slate-500'}`}>
-                          3. ANALYSIS
+                          03 FEATURE EXTRACTION
                         </div>
                         <div className={`p-2 rounded border transition-all duration-200 ${analyzingStage >= 4 ? 'border-brand-cyan bg-brand-cyan/20 text-brand-cyan font-bold shadow-[0_0_10px_rgba(0,229,255,0.25)]' : 'border-brand-border bg-brand-surface text-slate-500'}`}>
-                          4. ASSESSMENT
+                          04 CLASSIFICATION
                         </div>
                       </div>
                       
@@ -667,21 +725,26 @@ export default function Home() {
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
                     {/* Left Col: Image */}
                     <div className="lg:col-span-6 space-y-4">
-                      <div className="bg-brand-bg rounded-xl border border-brand-border overflow-hidden relative shadow-xl group tilt-card" onMouseMove={handleCardMouseMove} onMouseLeave={handleCardMouseLeave}>
+                      <div 
+                        className="bg-brand-bg rounded-xl border border-brand-border overflow-hidden relative shadow-xl group tilt-card" 
+                        style={{ transformStyle: 'preserve-3d' }}
+                        onMouseMove={handleCardMouseMove} 
+                        onMouseLeave={handleCardMouseLeave}
+                      >
                         <div className="px-3.5 py-2 bg-brand-surface-card border-b border-brand-border flex items-center justify-between font-mono text-xs">
                           <span className="text-slate-300 font-semibold flex items-center gap-1.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-brand-cyan"></span>
                             EVIDENCE SPECIMEN
                           </span>
                           <div className="flex items-center gap-1 bg-brand-bg p-0.5 rounded border border-brand-border text-[11px]">
-                            <button onClick={() => setIsHeatmap(false)} className={`px-2 py-0.5 rounded transition-all ${!isHeatmap ? 'bg-brand-surface text-brand-cyan font-bold' : 'text-slate-400 hover:text-slate-200'}`}>Original</button>
-                            <button onClick={() => setIsHeatmap(true)} className={`px-2 py-0.5 rounded transition-all ${isHeatmap ? 'bg-brand-surface text-brand-cyan font-bold' : 'text-slate-400 hover:text-slate-200'}`}>Artifact Heatmap</button>
+                            <button onClick={() => setIsHeatmap(false)} className={`px-2 py-0.5 rounded transition-all pointer-events-auto ${!isHeatmap ? 'bg-brand-surface text-brand-cyan font-bold' : 'text-slate-400 hover:text-slate-200'}`}>Original</button>
+                            <button onClick={() => setIsHeatmap(true)} className={`px-2 py-0.5 rounded transition-all pointer-events-auto ${isHeatmap ? 'bg-brand-surface text-brand-cyan font-bold' : 'text-slate-400 hover:text-slate-200'}`}>Artifact Heatmap</button>
                           </div>
                         </div>
                         
                         <div className="aspect-[4/3] w-full flex items-center justify-center bg-black/90 relative overflow-hidden">
-                          <img src={preview} className={`max-h-full max-w-full object-contain transition-all duration-300 pointer-events-none ${isHeatmap ? 'heatmap-filter' : ''}`} />
-                          <div className="absolute inset-0 bg-tech-grid opacity-25 pointer-events-none"></div>
+                          <img src={preview} style={{ transform: 'translateZ(10px)' }} className={`max-h-full max-w-full object-contain transition-all duration-300 pointer-events-none ${isHeatmap ? 'heatmap-filter' : ''}`} />
+                          <div className="absolute inset-0 bg-tech-grid opacity-25 pointer-events-none" style={{ transform: 'translateZ(-5px)' }}></div>
                         </div>
                         
                         <div className="px-4 py-2.5 bg-brand-surface-card border-t border-brand-border flex items-center justify-between text-xs font-mono text-slate-400">
@@ -808,6 +871,30 @@ export default function Home() {
                   </div>
                 </div>
               )}
+
+              {/* STATE 5: ERROR */}
+              {viewState === "error" && (
+                <div className="transition-all duration-300 py-6">
+                  <div className="max-w-xl mx-auto p-8 sm:p-12 text-center bg-brand-surface-card rounded-xl border border-brand-crimson/30 shadow-xl shadow-brand-crimson/10">
+                    <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-brand-crimson/10 text-brand-crimson mb-6 border border-brand-crimson/20">
+                      <span className="font-mono text-3xl font-bold">!</span>
+                    </div>
+                    <h2 className="text-2xl sm:text-3xl font-bold text-white mb-3">ANALYSIS FAILED</h2>
+                    <p className="text-sm font-mono text-slate-400 mb-8 leading-relaxed max-w-sm mx-auto">
+                      {errorMsg || "An unexpected error occurred during processing. Please try again."}
+                    </p>
+                    <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+                      <button onClick={triggerAnalyze} className="px-6 py-3 rounded-lg bg-brand-cyan hover:bg-cyan-300 text-brand-bg font-mono font-bold tracking-wider text-xs transition-all w-full sm:w-auto shadow-lg shadow-brand-cyan/20">
+                        TRY AGAIN
+                      </button>
+                      <button onClick={resetState} className="px-6 py-3 rounded-lg bg-brand-surface border border-brand-border hover:border-slate-500 text-slate-300 hover:text-white font-mono font-bold tracking-wider text-xs transition-colors w-full sm:w-auto">
+                        CHOOSE ANOTHER IMAGE
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
             </div>
           </div>
         </section>
