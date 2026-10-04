@@ -1,9 +1,8 @@
-streamlit
-torch
-torchvision
-pillow
-numpy
-fastapi
-uvicorn
+torch==2.14.1
+torchvision==0.29.1
+numpy==1.26.4
+pillow==10.4.0
+fastapi==0.142.2
+uvicorn==0.54.0
 python-multipart
 pydantic
